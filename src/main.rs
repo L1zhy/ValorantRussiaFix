@@ -4,7 +4,7 @@ mod progress;
 mod windows;
 mod zapret;
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 const HELP: &str = "Riot Fix — проверка прямого подключения Riot
@@ -120,7 +120,7 @@ fn main() -> ExitCode {
 
 fn repair(apply: bool) -> u8 {
     println!("=== Riot Fix ===");
-    let searching = progress::Activity::start("Поиск установок Zapret на дисках");
+    let searching = progress::Activity::start("Поиск и настройка выбранной установки Zapret");
     let zapret_ok = zapret::run(apply);
     drop(searching);
     let checking = progress::Activity::start("Проверка DNS и HTTPS к Riot");

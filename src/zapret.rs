@@ -14,34 +14,89 @@ unsafe extern "system" {
 }
 
 pub fn run(apply: bool) -> bool {
-    let mut download = None;
-    let mut found = false;
-    let mut ok = true;
+    let mut candidates = Vec::new();
     for root in drive_roots() {
         println!("Поиск Zapret: {}", root.display());
-        visit_lists(&root, |path| {
-            found = true;
-            warn_old_zapret(path);
-            if let Err(error) = update_list(path, apply) {
-                eprintln!("Не удалось обработать {}: {error}", path.display());
-                ok = false;
-            }
-            if apply {
-                ok &= apply_settings(path, &mut download);
-            } else {
-                println!(
-                    "  Можно включить Game Filter (TCP и UDP), Auto-Update Check и обновить IPSet: {}",
-                    path.display()
-                );
-            }
-        });
+        visit_lists(&root, |path| candidates.push(path.to_owned()));
     }
-    if !found {
-        println!("Доступные установки Zapret со списком исключений не найдены.");
+    candidates.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+    candidates.dedup_by(|a, b| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    });
+    candidates.sort_by_key(|path| version_key(path));
+    let Some(path) = candidates.pop() else {
+        println!("Установки Zapret не найдены. Обновите или установите Zapret.");
+        return false;
+    };
+    println!(
+        "Выбрана самая новая копия из {}: {}",
+        candidates.len() + 1,
+        path.display()
+    );
+    warn_old_zapret(&path);
+    if let Err(error) = update_list(&path, apply) {
+        eprintln!("Не удалось обработать {}: {error}", path.display());
+        return false;
     }
-    ok
+    if apply {
+        apply_settings(&path, &mut None)
+    } else {
+        println!("Можно включить Game Filter, Auto-Update Check и обновить IPSet.");
+        true
+    }
 }
 
+fn version_key(list: &Path) -> (Vec<u64>, String) {
+    let service = list
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|root| fs::read_to_string(root.join("service.bat")).ok())
+        .unwrap_or_default();
+    let version = service
+        .lines()
+        .find_map(|line| {
+            line.split_once("LOCAL_VERSION=")
+                .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    let numbers = version
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        })
+        .collect();
+    (numbers, version)
+}
+
+fn skip_directory(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "windows"
+            | "$recycle.bin"
+            | "system volume information"
+            | "appdata"
+            | "node_modules"
+            | ".git"
+            | "target"
+            | "cache"
+            | "caches"
+            | ".cache"
+            | "winsxs"
+            | "programdata"
+            | "go"
+            | ".cargo"
+            | ".rustup"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | "work"
+    )
+}
 fn warn_old_zapret(list: &Path) {
     let Some(root) = list.parent().and_then(Path::parent) else {
         return;
@@ -86,45 +141,68 @@ fn drive_roots() -> impl Iterator<Item = PathBuf> {
 }
 
 fn visit_lists(root: &Path, mut handle: impl FnMut(&Path)) {
-    let mut last_update = std::time::Instant::now();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        if last_update.elapsed().as_secs() >= 3 {
-            println!("  Поиск в {}", directory.display());
-            last_update = std::time::Instant::now();
-        }
-        if directory
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("lists"))
-            && let Some(installation) = directory.parent()
-        {
-            let list = directory.join("list-exclude.txt");
-            if is_plain_file(&list) && has_winws(installation) {
-                handle(&list);
+    let mut pending = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
+    if let Ok(users) = fs::read_dir(root.join("Users")) {
+        for user in users.flatten() {
+            for name in ["Downloads", "Desktop", "Documents", "OneDrive"] {
+                let common = user.path().join(name);
+                if common.is_dir() {
+                    pending.push_back((common, 0));
+                }
             }
+        }
+    }
+    let mut visited = 0;
+    let started = std::time::Instant::now();
+    while let Some((directory, depth)) = pending.pop_front() {
+        visited += 1;
+        if visited > 15000 || started.elapsed().as_secs() >= 4 {
+            println!("Достигнут предел поиска в {}.", root.display());
+            break;
+        }
+        let list = directory.join("lists").join("list-exclude.txt");
+        let service = directory.join("service.bat");
+        if is_plain_file(&list)
+            && is_plain_file(&service)
+            && directory.join("utils").is_dir()
+            && has_winws(&directory)
+        {
+            let contents = fs::read_to_string(service).unwrap_or_default();
+            if contents.contains("LOCAL_VERSION=") && contents.contains("game_filter.enabled") {
+                handle(&list);
+                continue;
+            }
+        }
+        if depth >= 4 {
+            continue;
         }
         if let Ok(entries) = fs::read_dir(&directory) {
             for entry in entries.flatten() {
-                // Use metadata without following symlinks, junctions and other reparse points.
+                if skip_directory(&entry.file_name().to_string_lossy()) {
+                    continue;
+                }
                 if entry.file_type().is_ok_and(|kind| kind.is_dir())
                     && entry
                         .metadata()
                         .is_ok_and(|info| info.file_attributes() & REPARSE_POINT == 0)
                 {
-                    pending.push(entry.path());
+                    pending.push_back((entry.path(), depth + 1));
                 }
             }
         }
     }
 }
-
 fn has_winws(installation: &Path) -> bool {
     ["winws.exe", "winws2.exe"].into_iter().any(|name| {
-        is_plain_file(&installation.join(name))
+        is_executable(&installation.join(name))
             || (fs::symlink_metadata(installation.join("bin"))
                 .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
-                && is_plain_file(&installation.join("bin").join(name)))
+                && is_executable(&installation.join("bin").join(name)))
     })
+}
+
+fn is_executable(path: &Path) -> bool {
+    is_plain_file(path) && fs::metadata(path).is_ok_and(|info| info.len() > 0)
 }
 
 fn is_plain_file(path: &Path) -> bool {
@@ -359,6 +437,9 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
 }
 
 #[cfg(test)]
+mod discovery_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -399,7 +480,12 @@ mod tests {
             let directory = root.join(name);
             fs::create_dir_all(directory.join("lists"))?;
             if name != "unrelated" {
-                fs::write(directory.join("winws.exe"), b"")?;
+                fs::write(directory.join("winws.exe"), b"MZ")?;
+                fs::create_dir_all(directory.join("utils"))?;
+                fs::write(
+                    directory.join("service.bat"),
+                    b"LOCAL_VERSION=1.10.3\ngame_filter.enabled",
+                )?;
             }
             fs::write(directory.join("lists\\list-exclude.txt"), original)?;
         }

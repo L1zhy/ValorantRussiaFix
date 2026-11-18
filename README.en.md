@@ -11,7 +11,7 @@ Riot Fix checks direct connections to Riot servers on Windows. Use it if Riot Cl
 ## Run it
 
 1. Run `riot-fix.exe` and accept the administrator prompt.
-2. Wait for the checks to finish. Searching your drives for Zapret can take a few minutes.
+2. Wait for the checks to finish. The program finds Zapret installations and selects the newest available version.
 3. Close Riot Client completely, then open it again.
 
 | Command | What it does |
@@ -25,7 +25,7 @@ A successful `--check` confirms access to the config API. Check sign-in and game
 
 ## What it changes
 
-- Removes the `riotgames.com` and `riotcdn.net` entries from `lists/list-exclude.txt` in every Zapret installation it finds.
+- Removes the `riotgames.com` and `riotcdn.net` entries from `lists/list-exclude.txt` in the newest Zapret installation it finds.
 - Enables Game Filter for TCP and UDP and turns on Auto-Update Check. Downloads [Flowseal's IPSet list](https://github.com/Flowseal/zapret-discord-youtube/blob/main/.service/ipset-service.txt) and loads it into IPSet Filter. If the download fails, it keeps the current list.
 - Checks Riot addresses over HTTPS without using the system proxy. If it needs a fallback address, it adds the address to `hosts` after three successful checks. It preserves manual entries.
 
@@ -42,3 +42,5 @@ cargo build --release --locked
 ```
 
 Exit code `0` means success, `1` means a system error, and `2` means some network checks failed. When UAC starts a new window, the original process reports whether the launch succeeded. The new window shows the result of the run.
+
+Discovery skips Windows, AppData and caches. It searches drive roots and common user folders to depth 4, with a budget of 4 seconds or 15,000 directories per drive. It selects the newest version among the installations it finds.
