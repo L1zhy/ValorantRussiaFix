@@ -99,6 +99,12 @@ fn main() -> ExitCode {
         Mode::Check => u8::from(!network::check_config()) * 2,
         Mode::Help => unreachable!(),
     };
+    if code == 0 && options.mode == Mode::Apply {
+        println!(
+            "Если фикс помог, поставь звезду на GitHub. Это поможет продвижению проекта, и другие игроки смогут его найти."
+        );
+        println!("https://github.com/Kopat14ch/ValorantRussiaFix");
+    }
     pause(options.pause && options.mode == Mode::Apply);
     ExitCode::from(code)
 }
