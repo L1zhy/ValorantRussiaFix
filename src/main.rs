@@ -74,6 +74,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    println!("Создано Lizhy");
+    println!("Discord-сообщество: https://discord.gg/pXTuzhABVx");
+    println!();
+
     if options.mode == Mode::Apply {
         match windows::is_elevated() {
             Ok(true) => {}

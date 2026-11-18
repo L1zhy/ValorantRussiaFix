@@ -1,5 +1,7 @@
 # ValorantRussiaFix
 
+Создано Lizhy. [Discord-сообщество](https://discord.gg/pXTuzhABVx).
+
 [Русский](README.md) · [English](README.en.md)
 
 [Скачать riot-fix.exe для Windows x64](https://github.com/Kopat14ch/ValorantRussiaFix/releases/latest)
