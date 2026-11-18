@@ -30,9 +30,15 @@ pub fn run(apply: bool) -> bool {
         return false;
     };
     println!(
-        "Выбрана самая новая копия из {}: {}",
-        candidates.len() + 1,
-        path.display()
+        "Найдено установок: {}. Выбрана самая новая.",
+        candidates.len() + 1
+    );
+    println!(
+        "Папка Zapret: {}",
+        path.parent()
+            .and_then(Path::parent)
+            .unwrap_or(&path)
+            .display()
     );
     warn_old_zapret(&path);
     if let Err(error) = update_list(&path, apply) {
@@ -42,7 +48,8 @@ pub fn run(apply: bool) -> bool {
     if apply {
         apply_settings(&path, &mut None)
     } else {
-        println!("Можно включить Game Filter, Auto-Update Check и обновить IPSet.");
+        println!("[ПЛАН] Включить игровые фильтры TCP/UDP и проверку обновлений.");
+        println!("[ПЛАН] Скачать и загрузить актуальный список IPSet.");
         true
     }
 }
@@ -233,16 +240,20 @@ fn update_list(path: &Path, apply: bool) -> io::Result<()> {
     let original = fs::read(path)?;
     let updated = without_riot_entries(&original);
     if original == updated {
-        println!("  Уже настроен: {}", path.display());
+        println!("  [OK] Домены Riot отсутствуют в исключениях Zapret.");
         return Ok(());
     }
     if !apply {
-        println!("  Можно удалить исключения Riot: {}", path.display());
+        println!(
+            "  [ПЛАН] Удалить домены Riot из исключений: {}",
+            path.display()
+        );
         return Ok(());
     }
 
     replace_with_backup(path, &original, &updated)?;
-    println!("  Исключения Riot удалены: {}", path.display());
+    println!("  [OK] Домены Riot удалены из исключений Zapret.");
+    println!("       Zapret сможет обрабатывать подключения к Riot.");
     Ok(())
 }
 
@@ -403,21 +414,21 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
     let utils = root.join("utils");
     let mut ok = true;
     let mut report = |name: &str, result: io::Result<()>| match result {
-        Ok(()) => println!("  {name}"),
+        Ok(()) => println!("  [OK] {name}"),
         Err(error) => {
             ok = false;
-            eprintln!("  {name}: {error}");
+            eprintln!("  [ОШИБКА] {name}: {error}");
         }
     };
     let usable_utils = fs::symlink_metadata(&utils)
         .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0);
     if usable_utils {
         report(
-            "Game Filter: TCP и UDP",
+            "Игровые фильтры включены для TCP и UDP",
             configure_game_filter(&utils.join("game_filter.enabled")),
         );
         report(
-            "Auto-Update Check: enabled",
+            "Проверка обновлений Zapret включена",
             enable_update_check(&utils.join("check_updates.enabled")),
         );
     } else {
@@ -427,12 +438,13 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
         );
     }
     let ipset = lists.join("ipset-all.txt");
+    println!("  Загрузка актуального списка IPSet и проверка содержимого...");
     let result = match download.get_or_insert_with(download_ipset) {
         Ok(data) => read_existing(&ipset)
             .and_then(|original| write_settings(&ipset, original.as_deref(), data)),
         Err(error) => Err(io::Error::other(error.clone())),
     };
-    report("IPSet Filter: loaded / Update IPSet List", result);
+    report("Список IPSet обновлён и загружен в IPSet Filter", result);
     ok
 }
 

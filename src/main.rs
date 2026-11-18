@@ -75,6 +75,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    println!("Riot Fix v{}", env!("CARGO_PKG_VERSION"));
     println!("Создано Lizhy");
     println!("Discord-сообщество: https://discord.gg/pXTuzhABVx");
     println!();
@@ -101,13 +102,43 @@ fn main() -> ExitCode {
     let outcome = std::panic::catch_unwind(|| match options.mode {
         Mode::Apply => repair(true),
         Mode::DryRun => repair(false),
-        Mode::Check => u8::from(!network::check_config()) * 2,
+        Mode::Check => {
+            println!("Проверка подключения к API конфигурации Riot...");
+            let checking = progress::Activity::start("Ожидание HTTPS-ответа Riot");
+            let code = u8::from(!network::check_config()) * 2;
+            drop(checking);
+            code
+        }
         Mode::Help => unreachable!(),
     });
     let code = outcome.unwrap_or_else(|_| {
         eprintln!("Ошибка выполнения. Проверьте сообщения выше. Для старой версии обновите Zapret: https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
         1
     });
+    println!();
+    println!("==================================================");
+    match code {
+        0 if options.mode == Mode::Apply => {
+            println!("ГОТОВО. Настройки применены, проверки завершены.");
+            println!("Теперь полностью закройте Riot Client и запустите его снова.");
+        }
+        0 if options.mode == Mode::Check => {
+            println!("ГОТОВО. API конфигурации Riot доступен.");
+            println!("Вход в аккаунт и запуск игры проверьте в Riot Client.");
+        }
+        0 => println!("ГОТОВО. Диагностика завершена. Для применения запустите riot-fix.exe."),
+        2 => {
+            println!("ПРОВЕРКА ЗАВЕРШЕНА. Часть адресов Riot не отвечает стабильно.");
+            println!("Посмотрите домены с ошибками выше. Проверьте работу Riot Client.");
+        }
+        _ => {
+            println!("ЗАВЕРШЕНО С ОШИБКОЙ. Часть действий выполнить не удалось.");
+            println!(
+                "Сообщение с причиной находится выше. Сохраните его для обращения за помощью."
+            );
+        }
+    }
+    println!("==================================================");
     if code == 0 && options.mode == Mode::Apply {
         println!(
             "Если фикс помог, поставь звезду на GitHub. Это поможет продвижению проекта, и другие игроки смогут его найти."
@@ -119,33 +150,42 @@ fn main() -> ExitCode {
 }
 
 fn repair(apply: bool) -> u8 {
-    println!("=== Riot Fix ===");
-    let searching = progress::Activity::start("Поиск и настройка выбранной установки Zapret");
+    if !apply {
+        println!("Режим диагностики. Изменения файлов отключены.");
+    }
+    println!("\n[1/3] Поиск и выбор Zapret");
+    let searching = progress::Activity::start("Поиск и настройка Zapret");
     let zapret_ok = zapret::run(apply);
     drop(searching);
+    println!("\n[2/3] Проверка подключения к Riot");
+    println!(
+        "Каждый подходящий IP проходит 3 HTTPS-проверки. Ожидание ответов может занять несколько минут."
+    );
     let checking = progress::Activity::start("Проверка DNS и HTTPS к Riot");
     let report = network::run();
     drop(checking);
 
+    println!("\n[3/3] Применение сетевых настроек");
     if apply {
         match hosts::apply(&report.pins) {
-            Ok(count) => println!("Записей Riot Fix в hosts: {count}."),
+            Ok(count) => println!("  Записей Riot Fix в hosts: {count}."),
             Err(error) => {
-                eprintln!("Не удалось обновить hosts: {error}");
+                eprintln!("  Ошибка обновления hosts: {error}");
                 return 1;
             }
         }
         if let Err(error) = windows::flush_dns() {
-            eprintln!("Не удалось очистить кеш DNS: {error}");
+            eprintln!("  Ошибка очистки кеша DNS: {error}");
             return 1;
         }
-        println!("Перезапустите Riot Client, если он открыт.");
+        println!("  Кеш DNS очищен.");
     } else {
-        println!("Предлагаемых записей hosts: {}.", report.pins.len());
+        println!("  Предлагаемых записей hosts: {}.", report.pins.len());
+        println!("  Чтобы применить настройки, запустите программу без --dry-run.");
     }
 
     if report.unresolved > 0 {
-        eprintln!("Доменов без стабильного ответа: {}.", report.unresolved);
+        println!("  Доменов без стабильного ответа: {}.", report.unresolved);
     }
     if !zapret_ok {
         1

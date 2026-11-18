@@ -154,6 +154,7 @@ fn probe(domain: &str, ip: Option<Ipv4Addr>) -> Result<Duration, String> {
 fn check_ip(domain: &str, ip: Ipv4Addr) -> (Option<Duration>, String) {
     let mut elapsed = Duration::ZERO;
     for attempt in 0..TRIES {
+        println!("  {domain}: HTTPS {ip}, попытка {}/{}", attempt + 1, TRIES);
         match probe(domain, Some(ip)) {
             Ok(duration) => elapsed += duration,
             Err(error) => return (None, format!("{attempt}/{TRIES} ({error})")),
@@ -180,6 +181,7 @@ fn is_cloudflare(ip: Ipv4Addr) -> bool {
 
 fn check_domain(domain: &str) -> (Resolution, String) {
     use std::fmt::Write;
+    println!("  {domain}: получаем адреса DNS...");
     let dns = resolve(domain, false);
     let mut tested = BTreeSet::new();
     let mut best = None;
@@ -199,11 +201,12 @@ fn check_domain(domain: &str) -> (Resolution, String) {
         }
     }
     if stable && !dns.is_empty() {
-        details.push_str("  DNS-адреса прошли проверку.\n");
+        details.push_str("  [OK] Подключение работает. Все адреса DNS прошли три проверки.\n");
         return (Resolution::StableDns, details);
     }
 
     if best.is_none() {
+        println!("  {domain}: ищем запасной адрес, проверка может занять больше времени.");
         let public = resolve(domain, true);
         let cf_domain = DOMAINS[..8].contains(&domain)
             || domain == "sieve.services.riotcdn.net"
@@ -227,10 +230,10 @@ fn check_domain(domain: &str) -> (Resolution, String) {
     }
 
     if let Some((_, ip)) = best {
-        let _ = writeln!(details, "  Подходящий адрес для hosts: {ip}");
+        let _ = writeln!(details, "  [OK] Найден рабочий адрес для hosts: {ip}");
         (Resolution::Pin(ip), details)
     } else {
-        details.push_str("  Стабильный адрес не найден.\n");
+        details.push_str("  [!] Соединение не удалось подтвердить. Стабильный адрес не найден.\n");
         (Resolution::Unresolved, details)
     }
 }
@@ -314,11 +317,32 @@ pub fn run() -> Report {
     let domains: Vec<_> = domains.into_iter().collect();
     let mut report = Report::default();
     println!("Проверка {} доменов Riot по HTTPS напрямую", domains.len());
-    for chunk in domains.chunks(CONCURRENCY) {
+    let completed = std::sync::atomic::AtomicUsize::new(0);
+    for (batch, chunk) in domains.chunks(CONCURRENCY).enumerate() {
         thread::scope(|scope| {
             let handles: Vec<_> = chunk
                 .iter()
-                .map(|domain| (domain, scope.spawn(move || check_domain(domain))))
+                .enumerate()
+                .map(|(index, domain)| {
+                    let completed = &completed;
+                    let total = domains.len();
+                    (
+                        domain,
+                        scope.spawn(move || {
+                            println!(
+                                "[{}/{}] Начинаем проверку {}",
+                                batch * CONCURRENCY + index + 1,
+                                total,
+                                domain
+                            );
+                            let result = check_domain(domain);
+                            let count =
+                                completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            println!("Завершено доменов: {count}/{total}");
+                            result
+                        }),
+                    )
+                })
                 .collect();
             for (domain, handle) in handles {
                 match handle.join() {
@@ -337,5 +361,11 @@ pub fn run() -> Report {
             }
         });
     }
+    println!(
+        "Итог проверки сети: доступно {} из {}, не удалось подтвердить {}.",
+        domains.len() - report.unresolved,
+        domains.len(),
+        report.unresolved
+    );
     report
 }

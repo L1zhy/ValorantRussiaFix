@@ -12,7 +12,7 @@ Riot Fix checks direct connections to Riot servers on Windows. Use it if Riot Cl
 
 1. Run `riot-fix.exe` and accept the administrator prompt.
 2. Wait for the checks to finish. The program finds Zapret installations and selects the newest available version.
-3. Close Riot Client completely, then open it again.
+3. Wait for the final result. After a successful or partially successful run, restart Riot Client. If the program reports an error, read the reason before trying again.
 
 | Command | What it does |
 | --- | --- |

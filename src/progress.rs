@@ -12,8 +12,14 @@ impl Activity {
         let (stop, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
             let start = Instant::now();
-            while receiver.recv_timeout(Duration::from_secs(3)).is_err() {
-                println!("  {label}... прошло {} сек.", start.elapsed().as_secs());
+            while matches!(
+                receiver.recv_timeout(Duration::from_secs(3)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ) {
+                println!(
+                    "  Работа продолжается: {label}. Прошло {} сек.",
+                    start.elapsed().as_secs()
+                );
             }
         });
         Self {
