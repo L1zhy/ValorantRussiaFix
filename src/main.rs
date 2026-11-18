@@ -1,5 +1,6 @@
 mod hosts;
 mod network;
+mod progress;
 mod windows;
 mod zapret;
 
@@ -97,12 +98,16 @@ fn main() -> ExitCode {
         }
     }
 
-    let code = match options.mode {
+    let outcome = std::panic::catch_unwind(|| match options.mode {
         Mode::Apply => repair(true),
         Mode::DryRun => repair(false),
         Mode::Check => u8::from(!network::check_config()) * 2,
         Mode::Help => unreachable!(),
-    };
+    });
+    let code = outcome.unwrap_or_else(|_| {
+        eprintln!("Ошибка выполнения. Проверьте сообщения выше. Для старой версии обновите Zapret: https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
+        1
+    });
     if code == 0 && options.mode == Mode::Apply {
         println!(
             "Если фикс помог, поставь звезду на GitHub. Это поможет продвижению проекта, и другие игроки смогут его найти."
@@ -115,8 +120,12 @@ fn main() -> ExitCode {
 
 fn repair(apply: bool) -> u8 {
     println!("=== Riot Fix ===");
+    let searching = progress::Activity::start("Поиск установок Zapret на дисках");
     let zapret_ok = zapret::run(apply);
+    drop(searching);
+    let checking = progress::Activity::start("Проверка DNS и HTTPS к Riot");
     let report = network::run();
+    drop(checking);
 
     if apply {
         match hosts::apply(&report.pins) {
@@ -148,7 +157,7 @@ fn repair(apply: bool) -> u8 {
 }
 
 fn pause(enabled: bool) {
-    if enabled && io::stdin().is_terminal() {
+    if enabled {
         print!("Нажмите Enter для выхода...");
         let _ = io::stdout().flush();
         let _ = io::stdin().read_line(&mut String::new());

@@ -21,6 +21,7 @@ pub fn run(apply: bool) -> bool {
         println!("Поиск Zapret: {}", root.display());
         visit_lists(&root, |path| {
             found = true;
+            warn_old_zapret(path);
             if let Err(error) = update_list(path, apply) {
                 eprintln!("Не удалось обработать {}: {error}", path.display());
                 ok = false;
@@ -39,6 +40,31 @@ pub fn run(apply: bool) -> bool {
         println!("Доступные установки Zapret со списком исключений не найдены.");
     }
     ok
+}
+
+fn warn_old_zapret(list: &Path) {
+    let Some(root) = list.parent().and_then(Path::parent) else {
+        return;
+    };
+    let service = fs::read_to_string(root.join("service.bat")).unwrap_or_default();
+    let supports_settings = service.contains("GameFilterTCP")
+        && service.contains("check_updates.enabled")
+        && service.contains("ipset-service.txt");
+    let version = service.lines().find_map(|line| {
+        let (_, rest) = line.split_once("LOCAL_VERSION=")?;
+        Some(rest.trim().trim_matches('"').to_owned())
+    });
+    if let Some(version) = version {
+        println!("  Версия Zapret: {version} ({})", root.display());
+        if version.starts_with("1.9.") {
+            eprintln!("  Обновите Zapret. Найдена старая версия {version}.");
+            eprintln!("  https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
+        }
+    }
+    if !supports_settings {
+        eprintln!("  Обновите Zapret: эта копия не поддерживает все необходимые настройки.");
+        eprintln!("  https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
+    }
 }
 
 fn drive_roots() -> impl Iterator<Item = PathBuf> {
@@ -60,8 +86,13 @@ fn drive_roots() -> impl Iterator<Item = PathBuf> {
 }
 
 fn visit_lists(root: &Path, mut handle: impl FnMut(&Path)) {
+    let mut last_update = std::time::Instant::now();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
+        if last_update.elapsed().as_secs() >= 3 {
+            println!("  Поиск в {}", directory.display());
+            last_update = std::time::Instant::now();
+        }
         if directory
             .file_name()
             .is_some_and(|name| name.eq_ignore_ascii_case("lists"))
