@@ -20,14 +20,21 @@ pub fn run(apply: bool, installation: Option<&Path>) -> bool {
     let mut handle = |path: &Path| {
         found = true;
         if let Err(error) = update_list(path, apply) {
-            eprintln!("Не удалось обработать {}: {error}", path.display());
+            localized!(
+                eprintln,
+                "Не удалось обработать {}: {error}",
+                "Could not process {}: {error}",
+                path.display()
+            );
             ok = false;
         }
         if apply {
             ok &= apply_settings(path, &mut download);
         } else {
-            println!(
+            localized!(
+                println,
                 "  Можно включить Game Filter (TCP и UDP), Auto-Update Check и обновить IPSet: {}",
+                "  Can enable Game Filter (TCP and UDP), enable Auto-Update Check, and update IPSet: {}",
                 path.display()
             );
         }
@@ -40,18 +47,32 @@ pub fn run(apply: bool, installation: Option<&Path>) -> bool {
             || !is_plain_file(&list)
             || !has_winws(installation)
         {
-            eprintln!("Invalid Zapret installation: {}", installation.display());
+            localized!(
+                eprintln,
+                "Некорректная установка Zapret: {}",
+                "Invalid Zapret installation: {}",
+                installation.display()
+            );
             return false;
         }
         handle(&list);
     } else {
         for root in drive_roots() {
-            println!("Поиск Zapret: {}", root.display());
+            localized!(
+                println,
+                "Поиск Zapret: {}",
+                "Searching for Zapret: {}",
+                root.display()
+            );
             visit_lists(&root, &mut handle);
         }
     }
     if !found {
-        println!("Доступные установки Zapret со списком исключений не найдены.");
+        localized!(
+            println,
+            "Доступные установки Zapret со списком исключений не найдены.",
+            "No accessible Zapret installations with an exclusion list were found."
+        );
     }
     ok
 }
@@ -144,16 +165,31 @@ fn update_list(path: &Path, apply: bool) -> io::Result<()> {
     let original = fs::read(path)?;
     let updated = without_riot_entries(&original);
     if original == updated {
-        println!("  Уже настроен: {}", path.display());
+        localized!(
+            println,
+            "  Уже настроен: {}",
+            "  Already configured: {}",
+            path.display()
+        );
         return Ok(());
     }
     if !apply {
-        println!("  Можно удалить исключения Riot: {}", path.display());
+        localized!(
+            println,
+            "  Можно удалить исключения Riot: {}",
+            "  Riot exclusions can be removed: {}",
+            path.display()
+        );
         return Ok(());
     }
 
     replace_with_backup(path, &original, &updated)?;
-    println!("  Исключения Riot удалены: {}", path.display());
+    localized!(
+        println,
+        "  Исключения Riot удалены: {}",
+        "  Removed Riot exclusions: {}",
+        path.display()
+    );
     Ok(())
 }
 
@@ -181,7 +217,10 @@ fn replace_with_backup(path: &Path, original: &[u8], updated: &[u8]) -> io::Resu
     drop(file);
     let result = write_result.and_then(|()| {
         if fs::read(path)? != original {
-            return Err(io::Error::other("список изменился во время обработки"));
+            return Err(io::Error::other(crate::locale::text(
+                "список изменился во время обработки",
+                "the list changed during processing",
+            )));
         }
         crate::windows::replace_file(path, &temp, &backup)
     });
@@ -189,7 +228,12 @@ fn replace_with_backup(path: &Path, original: &[u8], updated: &[u8]) -> io::Resu
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
-    println!("  Резервная копия: {}", backup.display());
+    localized!(
+        println,
+        "  Резервная копия: {}",
+        "  Backup: {}",
+        backup.display()
+    );
     Ok(())
 }
 
@@ -219,7 +263,11 @@ fn download_ipset() -> Result<Vec<u8>, String> {
         return Err(String::from_utf8_lossy(&response.stderr).trim().to_owned());
     }
     if !valid_ipset(&response.stdout) {
-        return Err("источник вернул некорректный список IPSet".into());
+        return Err(crate::locale::text(
+            "источник вернул некорректный список IPSet",
+            "the source returned an invalid IPSet list",
+        )
+        .into());
     }
     Ok(response.stdout)
 }
@@ -285,7 +333,10 @@ fn read_existing(path: &Path) -> io::Result<Option<Vec<u8>>> {
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
-        Ok(_) => Err(io::Error::other("ожидался обычный файл")),
+        Ok(_) => Err(io::Error::other(crate::locale::text(
+            "ожидался обычный файл",
+            "expected a regular file",
+        ))),
     }
 }
 
@@ -324,17 +375,20 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
         .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0);
     if usable_utils {
         report(
-            "Game Filter: TCP и UDP",
+            crate::locale::text("Game Filter: TCP и UDP", "Game Filter: TCP and UDP"),
             configure_game_filter(&utils.join("game_filter.enabled")),
         );
         report(
-            "Auto-Update Check: enabled",
+            crate::locale::text("Auto-Update Check: включено", "Auto-Update Check: enabled"),
             enable_update_check(&utils.join("check_updates.enabled")),
         );
     } else {
         report(
             "Game Filter / Auto-Update Check",
-            Err(io::Error::other("нет доступного каталога utils")),
+            Err(io::Error::other(crate::locale::text(
+                "нет доступного каталога utils",
+                "no accessible utils directory",
+            ))),
         );
     }
     let ipset = lists.join("ipset-all.txt");
@@ -343,7 +397,10 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
             .and_then(|original| write_settings(&ipset, original.as_deref(), data)),
         Err(error) => Err(io::Error::other(error.clone())),
     };
-    report("IPSet Filter: loaded / Update IPSet List", result);
+    report(
+        crate::locale::text("Обновление списка IPSet", "IPSet list update"),
+        result,
+    );
     ok
 }
 

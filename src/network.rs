@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 const CONFIG: &str = "clientconfig.rpg.riotgames.com";
 const CONFIG_PATH: &str = "/api/v1/config/public?app=Riot%20Client&patchline=KeystoneFoundationLiveWin&namespace=keystone.self_update";
+pub const VOICE_HOST: &str = "euc-prod.pp.sgp.pvp.net";
 const GEO: &str = "riot-geo.pas.si.riotgames.com";
+pub const PERMISSIONS: &str = "permissions.sgp.pvp.net";
 const DOMAINS: &[&str] = &[
     CONFIG,
     "auth.riotgames.com",
@@ -23,6 +25,7 @@ const DOMAINS: &[&str] = &[
     "sieve.services.riotcdn.net",
     "valorant.secure.dyn.riotcdn.net",
     "ks-foundation.secure.dyn.riotcdn.net",
+    PERMISSIONS,
 ];
 const FALLBACK_IPS: &[&str] = &[
     "104.16.206.131",
@@ -99,11 +102,36 @@ fn accepts_status(domain: &str, status: u16) -> bool {
     if domain == CONFIG {
         status == 200
     } else {
-        (200..400).contains(&status) || matches!(status, 401 | 404 | 405)
+        (200..400).contains(&status)
+            || matches!(status, 401 | 404 | 405)
+            // This endpoint can reject anonymous requests after a successful TLS handshake.
+            || (domain == PERMISSIONS && status == 403)
     }
 }
 
-fn probe(domain: &str, ip: Option<Ipv4Addr>) -> Result<Duration, String> {
+enum ProbeError {
+    Http(u16),
+    Transport(String),
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(code) => write!(f, "HTTP {code}"),
+            Self::Transport(message) => f.write_str(message),
+        }
+    }
+}
+
+fn probe(domain: &str, ip: Option<Ipv4Addr>) -> Result<Duration, ProbeError> {
+    probe_https(domain, ip, false)
+}
+
+fn probe_https(
+    domain: &str,
+    ip: Option<Ipv4Addr>,
+    transport_only: bool,
+) -> Result<Duration, ProbeError> {
     let mut cmd = system_command("curl.exe");
     cmd.args([
         "--disable",
@@ -130,44 +158,101 @@ fn probe(domain: &str, ip: Option<Ipv4Addr>) -> Result<Duration, String> {
     };
     cmd.arg(format!("https://{domain}{target}"));
     let start = Instant::now();
-    let response = cmd
-        .output()
-        .map_err(|error| format!("Ошибка запуска curl.exe ({error})"))?;
+    let response = cmd.output().map_err(|error| {
+        ProbeError::Transport(localized!(
+            format,
+            "Ошибка запуска curl.exe ({error})",
+            "Could not start curl.exe ({error})"
+        ))
+    })?;
     if !response.status.success() {
-        return Err(match response.status.code() {
-            Some(6) => "ошибка DNS".into(),
-            Some(7) => "не удалось установить TCP".into(),
-            Some(18) => "неполный HTTP-ответ".into(),
-            Some(28) => "тайм-аут соединения или ответа".into(),
-            Some(35) => "ошибка TLS".into(),
-            Some(60) => "ошибка проверки сертификата".into(),
-            code => format!("curl завершился с кодом {code:?}"),
-        });
+        return Err(ProbeError::Transport(match response.status.code() {
+            Some(6) => crate::locale::text("ошибка DNS", "DNS lookup failed").into(),
+            Some(7) => {
+                crate::locale::text("не удалось установить TCP", "TCP connection failed").into()
+            }
+            Some(18) => {
+                crate::locale::text("неполный HTTP-ответ", "incomplete HTTP response").into()
+            }
+            Some(28) => crate::locale::text(
+                "тайм-аут соединения или ответа",
+                "connection or response timed out",
+            )
+            .into(),
+            Some(35) => crate::locale::text("ошибка TLS", "TLS error").into(),
+            Some(60) => crate::locale::text(
+                "ошибка проверки сертификата",
+                "certificate verification failed",
+            )
+            .into(),
+            code => localized!(
+                format,
+                "curl завершился с кодом {code:?}",
+                "curl exited with code {code:?}"
+            ),
+        }));
     }
 
     let status = String::from_utf8_lossy(&response.stdout);
-    if !status
-        .trim()
-        .parse()
-        .is_ok_and(|code| accepts_status(domain, code))
-    {
-        return Err(format!("HTTP {}", status.trim()));
+    let code = status.trim().parse().map_err(|_| {
+        ProbeError::Transport(localized!(
+            format,
+            "Некорректный статус HTTP: {}",
+            "Invalid HTTP status: {}",
+            status.trim()
+        ))
+    })?;
+    if !(if transport_only {
+        (100..600).contains(&code)
+    } else {
+        accepts_status(domain, code)
+    }) {
+        return Err(ProbeError::Http(code));
     }
     Ok(start.elapsed())
 }
 
-fn check_ip(domain: &str, ip: Ipv4Addr) -> (Option<Duration>, String) {
+fn check_ip(domain: &str, ip: Ipv4Addr) -> (Option<Duration>, bool, String) {
     let mut elapsed = Duration::ZERO;
     for attempt in 0..TRIES {
         match probe(domain, Some(ip)) {
             Ok(duration) => elapsed += duration,
-            Err(error) => return (None, format!("{attempt}/{TRIES} ({error})")),
+            Err(ProbeError::Http(403)) => {
+                return (
+                    None,
+                    true,
+                    localized!(
+                        format,
+                        "HTTP 403: HTTPS доступен, сервер отказал в доступе (попытка {})",
+                        "HTTP 403: HTTPS reachable, access denied (attempt {})",
+                        attempt + 1
+                    ),
+                );
+            }
+            Err(error) => {
+                return (
+                    None,
+                    false,
+                    localized!(
+                        format,
+                        "Попытка {}: {error}",
+                        "Attempt {}: {error}",
+                        attempt + 1
+                    ),
+                );
+            }
         }
     }
     let average = elapsed / TRIES as u32;
     (
         Some(average),
-        format!("{TRIES}/{TRIES} ({} мс)", average.as_millis()),
+        false,
+        localized!(
+            format,
+            "{TRIES}/{TRIES} ({} мс)",
+            "{TRIES}/{TRIES} ({} ms)",
+            average.as_millis()
+        ),
     )
 }
 
@@ -190,10 +275,12 @@ fn check_domain(domain: &str) -> (Resolution, String) {
     let mut best = None;
     let mut details = format!("\n{domain}\n");
     let mut stable = true;
+    let mut denied = false;
 
     for &ip in &dns {
         tested.insert(ip);
-        let (average, note) = check_ip(domain, ip);
+        let (average, forbidden, note) = check_ip(domain, ip);
+        denied |= forbidden;
         let _ = writeln!(details, "  {ip:<15} {note}");
         if let Some(average) = average {
             if best.is_none_or(|(time, _)| average < time) {
@@ -204,7 +291,10 @@ fn check_domain(domain: &str) -> (Resolution, String) {
         }
     }
     if stable && !dns.is_empty() {
-        details.push_str("  DNS-адреса прошли проверку.\n");
+        details.push_str(crate::locale::text(
+            "  DNS-адреса прошли проверку.\n",
+            "  DNS addresses passed the check.\n",
+        ));
         return (Resolution::StableDns, details);
     }
 
@@ -214,38 +304,58 @@ fn check_domain(domain: &str) -> (Resolution, String) {
             || domain == "sieve.services.riotcdn.net"
             || dns.iter().chain(&public).copied().any(is_cloudflare);
         let fallback = FALLBACK_IPS.iter().filter_map(|value| value.parse().ok());
-        let candidates =
-            public
-                .into_iter()
-                .chain(fallback.take(if cf_domain { FALLBACK_IPS.len() } else { 0 }));
-        let candidates: Vec<_> = candidates.filter(|ip| tested.insert(*ip)).collect();
-        for batch in candidates.chunks(FALLBACK_CONCURRENCY) {
-            best = thread::scope(|scope| {
-                let handles: Vec<_> = batch
-                    .iter()
-                    .map(|&ip| (ip, scope.spawn(move || check_ip(domain, ip))))
-                    .collect();
-                let mut first_working = None;
-                for (ip, handle) in handles {
-                    let (average, note) = handle.join().expect("IP check");
-                    let _ = writeln!(details, "  {ip:<15} {note}");
-                    if let Some(average) = average {
-                        first_working.get_or_insert((average, ip));
-                    }
-                }
-                first_working
-            });
-            if best.is_some() {
+        let candidates: Vec<_> = public.into_iter().filter(|ip| tested.insert(*ip)).collect();
+        let fallback: Vec<_> = fallback.filter(|ip| tested.insert(*ip)).collect();
+        for (index, addresses) in [candidates, fallback].into_iter().enumerate() {
+            if index == 1 && (domain == PERMISSIONS || !cf_domain || denied || best.is_some()) {
                 break;
+            }
+            for batch in addresses.chunks(FALLBACK_CONCURRENCY) {
+                best = thread::scope(|scope| {
+                    let handles: Vec<_> = batch
+                        .iter()
+                        .map(|&ip| (ip, scope.spawn(move || check_ip(domain, ip))))
+                        .collect();
+                    let mut first_working = None;
+                    for (ip, handle) in handles {
+                        let (average, forbidden, note) = handle.join().expect("IP check");
+                        denied |= forbidden;
+                        let _ = writeln!(details, "  {ip:<15} {note}");
+                        if let Some(average) = average {
+                            first_working.get_or_insert((average, ip));
+                        }
+                    }
+                    first_working
+                });
+                if best.is_some() {
+                    break;
+                }
             }
         }
     }
 
     if let Some((_, ip)) = best {
-        let _ = writeln!(details, "  Подходящий адрес для hosts: {ip}");
+        let _ = writeln!(
+            details,
+            "{}",
+            localized!(
+                format,
+                "  Подходящий адрес для hosts: {ip}",
+                "  Suitable hosts address: {ip}"
+            )
+        );
         (Resolution::Pin(ip), details)
+    } else if denied {
+        details.push_str(crate::locale::text(
+            "  HTTPS доступен, но сервер отклонил запрос. Файл hosts оставлен без изменений.\n",
+            "  HTTPS reachable; the server denied this request. No hosts override.\n",
+        ));
+        (Resolution::Unresolved, details)
     } else {
-        details.push_str("  Стабильный адрес не найден.\n");
+        details.push_str(crate::locale::text(
+            "  Стабильный адрес не найден.\n",
+            "  No stable address found.\n",
+        ));
         (Resolution::Unresolved, details)
     }
 }
@@ -310,10 +420,63 @@ fn domains_from_logs() -> BTreeSet<String> {
     domains
 }
 
+pub enum VoiceRoute {
+    Healthy,
+    Candidate(Ipv4Addr),
+    Uncertain,
+}
+
+pub fn check_voice() -> VoiceRoute {
+    let addresses = resolve(VOICE_HOST, false);
+    if addresses.len() < 2 {
+        localized!(
+            println,
+            "Для {VOICE_HOST} нужны хотя бы два DNS-адреса.",
+            "Need at least two DNS addresses for {VOICE_HOST}."
+        );
+        return VoiceRoute::Uncertain;
+    }
+
+    let results = thread::scope(|scope| {
+        addresses
+            .into_iter()
+            .map(|ip| {
+                scope.spawn(move || {
+                    let passed = (0..TRIES)
+                        .filter(|_| probe_https(VOICE_HOST, Some(ip), true).is_ok())
+                        .count();
+                    (ip, passed)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().expect("voice HTTPS probe"))
+            .collect::<Vec<_>>()
+    });
+
+    for (ip, passed) in &results {
+        println!("{ip}: HTTPS {passed}/{TRIES}");
+    }
+    if results.iter().all(|&(_, passed)| passed == TRIES) {
+        return VoiceRoute::Healthy;
+    }
+    if results.iter().any(|&(_, passed)| passed == 0)
+        && let Some(&(ip, _)) = results.iter().find(|&&(_, passed)| passed == TRIES)
+    {
+        return VoiceRoute::Candidate(ip);
+    }
+    VoiceRoute::Uncertain
+}
+
 pub fn check_config() -> bool {
     match probe(CONFIG, None) {
         Ok(duration) => {
-            println!("{CONFIG} HTTP 200 ({} мс, напрямую)", duration.as_millis());
+            localized!(
+                println,
+                "{CONFIG} HTTP 200 ({} мс, напрямую)",
+                "{CONFIG} HTTP 200 ({} ms, direct)",
+                duration.as_millis()
+            );
             true
         }
         Err(error) => {
@@ -328,7 +491,12 @@ pub fn run() -> Report {
     domains.extend(DOMAINS.iter().map(|name| (*name).to_owned()));
     let domains: Vec<_> = domains.into_iter().collect();
     let mut report = Report::default();
-    println!("Проверка {} доменов Riot по HTTPS напрямую", domains.len());
+    localized!(
+        println,
+        "Проверка {} доменов Riot по HTTPS напрямую",
+        "Checking {} Riot domains over direct HTTPS",
+        domains.len()
+    );
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (sender, receiver) = std::sync::mpsc::channel();
     thread::scope(|scope| {
