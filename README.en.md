@@ -10,13 +10,17 @@ Riot Fix checks direct connections to Riot servers on Windows. Use it if Riot Cl
 
 ## Run it
 
-1. Run `riot-fix.exe` and accept the administrator prompt.
-2. Wait for the checks to finish. The program finds Zapret installations and selects the newest available version.
-3. Wait for the final result. After a successful or partially successful run, restart Riot Client. If the program reports an error, read the reason before trying again.
+1. Open `riot-fix.exe` and choose an action.
+2. To apply the connection repair, select **Применить общий фикс**, approve the Windows prompt, and restart Riot Client after the changes are applied.
+3. For voice chat, select **Проверить маршрут войса** to check routes. If an address is found, select **Применить фикс войса** to use it or **Отменить фикс войса** to restore DNS selection.
 
 | Command | What it does |
 | --- | --- |
-| `riot-fix.exe` | Applies the Zapret settings and checks Riot server addresses. |
+| `riot-fix.exe` | Opens the desktop interface. |
+| `riot-fix.exe --apply` | Applies the connection repair from the command line. |
+| `riot-fix.exe --voice-check` | Checks voice routes without making changes. |
+| `riot-fix.exe --voice-fix` | Pins the selected voice address in hosts. |
+| `riot-fix.exe --voice-reset` | Removes the voice override. |
 | `riot-fix.exe --check` | Checks HTTPS access to the Riot Client Config API without administrator rights. |
 | `riot-fix.exe --dry-run` | Finds Zapret installations and checks the network without writing any files. |
 | `riot-fix.exe --no-pause` | Applies the changes and exits without waiting for Enter. |

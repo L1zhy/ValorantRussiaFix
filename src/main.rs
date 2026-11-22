@@ -1,3 +1,4 @@
+mod gui;
 mod hosts;
 mod network;
 mod progress;
@@ -11,20 +12,28 @@ use std::process::ExitCode;
 const HELP: &str = "Riot Fix — проверка прямого подключения Riot
 
 Использование:
-  riot-fix.exe            Применить исправления и проверить подключение
+  riot-fix.exe            Открыть графическое окно
+  riot-fix.exe --apply    Применить исправления из консоли
   riot-fix.exe --dry-run  Проверить Zapret и сеть без записи файлов
   riot-fix.exe --check    Проверить HTTPS к Riot Client Config без изменений
+  riot-fix.exe --voice-check  Voice route diagnosis
+  riot-fix.exe --voice-fix    Apply a temporary voice DNS override
+  riot-fix.exe --voice-reset  Remove the voice DNS override
   riot-fix.exe --help     Показать справку
 
-Добавьте --zapret-dir <path> для выбора конкретной установки Zapret.
+Добавьте --zapret-dir <path> для проверки конкретной установки Zapret.
 Добавьте --no-pause для запуска без ожидания Enter.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
+    Gui,
     Apply,
     DryRun,
     Check,
     Help,
+    VoiceCheck,
+    VoiceFix,
+    VoiceReset,
 }
 
 struct Options {
@@ -41,7 +50,12 @@ impl Options {
         let mut arguments = std::env::args_os().skip(1);
         while let Some(argument) = arguments.next() {
             let selected = match argument.to_str() {
+                Some("--gui") => Mode::Gui,
+                Some("--apply") => Mode::Apply,
                 Some("--dry-run") => Mode::DryRun,
+                Some("--voice-check") => Mode::VoiceCheck,
+                Some("--voice-fix") => Mode::VoiceFix,
+                Some("--voice-reset") => Mode::VoiceReset,
                 Some("--check") => Mode::Check,
                 Some("--help" | "-h") => Mode::Help,
                 Some("--zapret-dir") => {
@@ -70,7 +84,11 @@ impl Options {
             }
         }
         Ok(Self {
-            mode: mode.unwrap_or(Mode::Apply),
+            mode: mode.unwrap_or(if pause && zapret_dir.is_none() {
+                Mode::Gui
+            } else {
+                Mode::Apply
+            }),
             pause,
             zapret_dir,
         })
@@ -91,12 +109,26 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if options.mode == Mode::Gui {
+        return match gui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Riot Fix UI: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     println!("Riot Fix v{}", env!("CARGO_PKG_VERSION"));
     println!("Создано Lizhy");
     println!("Discord-сообщество: https://discord.gg/pXTuzhABVx");
     println!();
 
-    if options.mode == Mode::Apply {
+    let writes = matches!(
+        options.mode,
+        Mode::Apply | Mode::VoiceFix | Mode::VoiceReset
+    );
+    if writes {
         match windows::is_elevated() {
             Ok(true) => {}
             Ok(false) => match windows::relaunch_elevated() {
@@ -125,12 +157,20 @@ fn main() -> ExitCode {
             drop(checking);
             code
         }
-        Mode::Help => unreachable!(),
+        Mode::VoiceCheck | Mode::VoiceFix | Mode::VoiceReset => voice(options.mode),
+        Mode::Gui | Mode::Help => unreachable!(),
     });
     let code = outcome.unwrap_or_else(|_| {
         eprintln!("Ошибка выполнения. Проверьте сообщения выше. Для старой версии обновите Zapret: https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
         1
     });
+    if matches!(
+        options.mode,
+        Mode::VoiceCheck | Mode::VoiceFix | Mode::VoiceReset
+    ) {
+        pause(options.pause && writes);
+        return ExitCode::from(code);
+    }
     println!();
     println!("==================================================");
     match code {
@@ -165,6 +205,43 @@ fn main() -> ExitCode {
     }
     pause(options.pause && options.mode == Mode::Apply);
     ExitCode::from(code)
+}
+
+fn voice(mode: Mode) -> u8 {
+    let ip = if mode == Mode::VoiceReset {
+        None
+    } else {
+        match network::check_voice() {
+            network::VoiceRoute::Healthy => {
+                println!(
+                    "All DNS addresses passed HTTPS. Try --voice-reset if an override is installed."
+                );
+                return 0;
+            }
+            network::VoiceRoute::Candidate(ip) => {
+                println!("Voice route candidate: {ip}. Confirm by joining team voice in VALORANT.");
+                if mode == Mode::VoiceCheck {
+                    return 0;
+                }
+                Some(ip)
+            }
+            network::VoiceRoute::Uncertain => {
+                eprintln!("No consistently reachable alternative was established.");
+                return 2;
+            }
+        }
+    };
+
+    if let Err(error) = hosts::apply_voice(ip).and_then(|()| windows::flush_dns()) {
+        eprintln!("Could not update voice routing: {error}");
+        return 1;
+    }
+    if ip.is_some() {
+        println!("Voice override applied. Remove it with --voice-reset after testing.");
+    } else {
+        println!("Voice override removed.");
+    }
+    0
 }
 
 fn repair(apply: bool, zapret_dir: Option<&Path>) -> u8 {
