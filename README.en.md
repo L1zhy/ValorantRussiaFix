@@ -4,7 +4,7 @@ Created by Lizhy. [Discord community](https://discord.gg/pXTuzhABVx).
 
 [Русский](README.md) · [English](README.en.md)
 
-[Download riot-fix.exe for Windows x64](https://github.com/Kopat14ch/ValorantRussiaFix/releases/latest)
+[Download riot-fix.exe for Windows x64](https://github.com/L1zhy/ValorantRussiaFix/releases/latest)
 
 Riot Fix checks direct connections to Riot servers on Windows. Use it if Riot Client or VALORANT stalls while connecting on a PC running Flowseal's Zapret.
 
