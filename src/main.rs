@@ -5,6 +5,7 @@ mod windows;
 mod zapret;
 
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const HELP: &str = "Riot Fix — проверка прямого подключения Riot
@@ -15,6 +16,7 @@ const HELP: &str = "Riot Fix — проверка прямого подключ�
   riot-fix.exe --check    Проверить HTTPS к Riot Client Config без изменений
   riot-fix.exe --help     Показать справку
 
+Добавьте --zapret-dir <path> для выбора конкретной установки Zapret.
 Добавьте --no-pause для запуска без ожидания Enter.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,17 +30,30 @@ enum Mode {
 struct Options {
     mode: Mode,
     pause: bool,
+    zapret_dir: Option<PathBuf>,
 }
 
 impl Options {
     fn parse() -> Result<Self, String> {
         let mut mode = None;
         let mut pause = true;
-        for argument in std::env::args_os().skip(1) {
+        let mut zapret_dir = None;
+        let mut arguments = std::env::args_os().skip(1);
+        while let Some(argument) = arguments.next() {
             let selected = match argument.to_str() {
                 Some("--dry-run") => Mode::DryRun,
                 Some("--check") => Mode::Check,
                 Some("--help" | "-h") => Mode::Help,
+                Some("--zapret-dir") => {
+                    if zapret_dir.is_some() {
+                        return Err("--zapret-dir: specify only one path".into());
+                    }
+                    let path = arguments.next().filter(|path| {
+                        !path.is_empty() && !path.to_string_lossy().starts_with("--")
+                    });
+                    zapret_dir = Some(PathBuf::from(path.ok_or("--zapret-dir requires a path")?));
+                    continue;
+                }
                 Some("--no-pause") => {
                     pause = false;
                     continue;
@@ -57,6 +72,7 @@ impl Options {
         Ok(Self {
             mode: mode.unwrap_or(Mode::Apply),
             pause,
+            zapret_dir,
         })
     }
 }
@@ -100,8 +116,8 @@ fn main() -> ExitCode {
     }
 
     let outcome = std::panic::catch_unwind(|| match options.mode {
-        Mode::Apply => repair(true),
-        Mode::DryRun => repair(false),
+        Mode::Apply => repair(true, options.zapret_dir.as_deref()),
+        Mode::DryRun => repair(false, options.zapret_dir.as_deref()),
         Mode::Check => {
             println!("Проверка подключения к API конфигурации Riot...");
             let checking = progress::Activity::start("Ожидание HTTPS-ответа Riot");
@@ -151,14 +167,17 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-fn repair(apply: bool) -> u8 {
+fn repair(apply: bool, zapret_dir: Option<&Path>) -> u8 {
     if !apply {
         println!("Режим диагностики. Изменения файлов отключены.");
     }
     println!("\n[1/3] Поиск и выбор Zapret");
     let searching = progress::Activity::start("Поиск и настройка Zapret");
-    let zapret_ok = zapret::run(apply);
+    let zapret_ok = zapret::run(apply, zapret_dir);
     drop(searching);
+    if apply && !zapret_ok && zapret_dir.is_some() {
+        return 1;
+    }
     println!("\n[2/3] Проверка подключения к Riot");
     println!(
         "Каждый подходящий IP проходит 3 HTTPS-проверки. Ожидание ответов может занять несколько минут."
@@ -168,6 +187,7 @@ fn repair(apply: bool) -> u8 {
     drop(checking);
 
     println!("\n[3/3] Применение сетевых настроек");
+    let mut config_ok = true;
     if apply {
         match hosts::apply(&report.pins) {
             Ok(count) => println!("  Записей Riot Fix в hosts: {count}."),
@@ -181,6 +201,7 @@ fn repair(apply: bool) -> u8 {
             return 1;
         }
         println!("  Кеш DNS очищен.");
+        config_ok = network::check_config();
     } else {
         println!("  Предлагаемых записей hosts: {}.", report.pins.len());
         println!("  Чтобы применить настройки, запустите программу без --dry-run.");
@@ -191,7 +212,7 @@ fn repair(apply: bool) -> u8 {
     }
     if !zapret_ok {
         1
-    } else if report.unresolved > 0 {
+    } else if !config_ok || report.unresolved > 0 {
         2
     } else {
         0

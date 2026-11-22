@@ -13,7 +13,30 @@ unsafe extern "system" {
     fn GetDriveTypeW(root: *const u16) -> u32;
 }
 
-pub fn run(apply: bool) -> bool {
+pub fn run(apply: bool, installation: Option<&Path>) -> bool {
+    let path = if let Some(installation) = installation {
+        let lists = installation.join("lists");
+        let list = lists.join("list-exclude.txt");
+        if ![installation, lists.as_path()].into_iter().all(|path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
+        }) || !is_plain_file(&list)
+            || !has_winws(installation)
+        {
+            eprintln!("Invalid Zapret installation: {}", installation.display());
+            return false;
+        }
+        list
+    } else {
+        let Some(path) = discover_latest() else {
+            return false;
+        };
+        path
+    };
+    configure(&path, apply)
+}
+
+fn discover_latest() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     for root in drive_roots() {
         println!("Поиск Zapret: {}", root.display());
@@ -27,26 +50,30 @@ pub fn run(apply: bool) -> bool {
     candidates.sort_by_key(|path| version_key(path));
     let Some(path) = candidates.pop() else {
         println!("Установки Zapret не найдены. Обновите или установите Zapret.");
-        return false;
+        return None;
     };
     println!(
         "Найдено установок: {}. Выбрана самая новая.",
         candidates.len() + 1
     );
+    Some(path)
+}
+
+fn configure(path: &Path, apply: bool) -> bool {
     println!(
         "Папка Zapret: {}",
         path.parent()
             .and_then(Path::parent)
-            .unwrap_or(&path)
+            .unwrap_or(path)
             .display()
     );
-    warn_old_zapret(&path);
-    if let Err(error) = update_list(&path, apply) {
+    warn_old_zapret(path);
+    if let Err(error) = update_list(path, apply) {
         eprintln!("Не удалось обработать {}: {error}", path.display());
         return false;
     }
     if apply {
-        apply_settings(&path, &mut None)
+        apply_settings(path, &mut None)
     } else {
         println!("[ПЛАН] Включить игровые фильтры TCP/UDP и проверку обновлений.");
         println!("[ПЛАН] Скачать и загрузить актуальный список IPSet.");
