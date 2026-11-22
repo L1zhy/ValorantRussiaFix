@@ -14,67 +14,146 @@ unsafe extern "system" {
 }
 
 pub fn run(apply: bool, installation: Option<&Path>) -> bool {
-    let mut download = None;
-    let mut found = false;
-    let mut ok = true;
-    let mut handle = |path: &Path| {
-        found = true;
-        if let Err(error) = update_list(path, apply) {
-            localized!(
-                eprintln,
-                "Не удалось обработать {}: {error}",
-                "Could not process {}: {error}",
-                path.display()
-            );
-            ok = false;
-        }
-        if apply {
-            ok &= apply_settings(path, &mut download);
-        } else {
-            localized!(
-                println,
-                "  Можно включить Game Filter (TCP и UDP), Auto-Update Check и обновить IPSet: {}",
-                "  Can enable Game Filter (TCP and UDP), enable Auto-Update Check, and update IPSet: {}",
-                path.display()
-            );
-        }
-    };
-    if let Some(installation) = installation {
+    let path = if let Some(installation) = installation {
         let lists = installation.join("lists");
         let list = lists.join("list-exclude.txt");
-        if !is_plain_directory(installation)
-            || !is_plain_directory(&lists)
-            || !is_plain_file(&list)
+        if ![installation, lists.as_path()].into_iter().all(|path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
+        }) || !is_plain_file(&list)
             || !has_winws(installation)
         {
-            localized!(
-                eprintln,
-                "Некорректная установка Zapret: {}",
-                "Invalid Zapret installation: {}",
-                installation.display()
-            );
+            eprintln!("Invalid Zapret installation: {}", installation.display());
             return false;
         }
-        handle(&list);
+        list
     } else {
-        for root in drive_roots() {
-            localized!(
-                println,
-                "Поиск Zapret: {}",
-                "Searching for Zapret: {}",
-                root.display()
-            );
-            visit_lists(&root, &mut handle);
+        let Some(path) = discover_latest() else {
+            return false;
+        };
+        path
+    };
+    configure(&path, apply)
+}
+
+fn discover_latest() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in drive_roots() {
+        println!("Поиск Zapret: {}", root.display());
+        visit_lists(&root, |path| candidates.push(path.to_owned()));
+    }
+    candidates.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+    candidates.dedup_by(|a, b| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    });
+    candidates.sort_by_key(|path| version_key(path));
+    let Some(path) = candidates.pop() else {
+        println!("Установки Zapret не найдены. Обновите или установите Zapret.");
+        return None;
+    };
+    println!(
+        "Найдено установок: {}. Выбрана самая новая.",
+        candidates.len() + 1
+    );
+    Some(path)
+}
+
+fn configure(path: &Path, apply: bool) -> bool {
+    println!(
+        "Папка Zapret: {}",
+        path.parent()
+            .and_then(Path::parent)
+            .unwrap_or(path)
+            .display()
+    );
+    warn_old_zapret(path);
+    if let Err(error) = update_list(path, apply) {
+        eprintln!("Не удалось обработать {}: {error}", path.display());
+        return false;
+    }
+    if apply {
+        apply_settings(path, &mut None)
+    } else {
+        println!("[ПЛАН] Включить игровые фильтры TCP/UDP и проверку обновлений.");
+        println!("[ПЛАН] Скачать и загрузить актуальный список IPSet.");
+        true
+    }
+}
+
+fn version_key(list: &Path) -> (Vec<u64>, String) {
+    let service = list
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|root| fs::read_to_string(root.join("service.bat")).ok())
+        .unwrap_or_default();
+    let version = service
+        .lines()
+        .find_map(|line| {
+            line.split_once("LOCAL_VERSION=")
+                .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    let numbers = version
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        })
+        .collect();
+    (numbers, version)
+}
+
+fn skip_directory(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "windows"
+            | "$recycle.bin"
+            | "system volume information"
+            | "appdata"
+            | "node_modules"
+            | ".git"
+            | "target"
+            | "cache"
+            | "caches"
+            | ".cache"
+            | "winsxs"
+            | "programdata"
+            | "go"
+            | ".cargo"
+            | ".rustup"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | "work"
+    )
+}
+fn warn_old_zapret(list: &Path) {
+    let Some(root) = list.parent().and_then(Path::parent) else {
+        return;
+    };
+    let service = fs::read_to_string(root.join("service.bat")).unwrap_or_default();
+    let supports_settings = service.contains("GameFilterTCP")
+        && service.contains("check_updates.enabled")
+        && service.contains("ipset-service.txt");
+    let version = service.lines().find_map(|line| {
+        let (_, rest) = line.split_once("LOCAL_VERSION=")?;
+        Some(rest.trim().trim_matches('"').to_owned())
+    });
+    if let Some(version) = version {
+        println!("  Версия Zapret: {version} ({})", root.display());
+        if version.starts_with("1.9.") {
+            eprintln!("  Обновите Zapret. Найдена старая версия {version}.");
+            eprintln!("  https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
         }
     }
-    if !found {
-        localized!(
-            println,
-            "Доступные установки Zapret со списком исключений не найдены.",
-            "No accessible Zapret installations with an exclusion list were found."
-        );
+    if !supports_settings {
+        eprintln!("  Обновите Zapret: эта копия не поддерживает все необходимые настройки.");
+        eprintln!("  https://github.com/Flowseal/zapret-discord-youtube/releases/latest");
     }
-    ok
 }
 
 fn drive_roots() -> impl Iterator<Item = PathBuf> {
@@ -96,45 +175,68 @@ fn drive_roots() -> impl Iterator<Item = PathBuf> {
 }
 
 fn visit_lists(root: &Path, mut handle: impl FnMut(&Path)) {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        if directory
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("lists"))
-            && let Some(installation) = directory.parent()
-        {
-            let list = directory.join("list-exclude.txt");
-            if is_plain_file(&list) && has_winws(installation) {
-                handle(&list);
+    let mut pending = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
+    if let Ok(users) = fs::read_dir(root.join("Users")) {
+        for user in users.flatten() {
+            for name in ["Downloads", "Desktop", "Documents", "OneDrive"] {
+                let common = user.path().join(name);
+                if common.is_dir() {
+                    pending.push_back((common, 0));
+                }
             }
+        }
+    }
+    let mut visited = 0;
+    let started = std::time::Instant::now();
+    while let Some((directory, depth)) = pending.pop_front() {
+        visited += 1;
+        if visited > 15000 || started.elapsed().as_secs() >= 4 {
+            println!("Достигнут предел поиска в {}.", root.display());
+            break;
+        }
+        let list = directory.join("lists").join("list-exclude.txt");
+        let service = directory.join("service.bat");
+        if is_plain_file(&list)
+            && is_plain_file(&service)
+            && directory.join("utils").is_dir()
+            && has_winws(&directory)
+        {
+            let contents = fs::read_to_string(service).unwrap_or_default();
+            if contents.contains("LOCAL_VERSION=") && contents.contains("game_filter.enabled") {
+                handle(&list);
+                continue;
+            }
+        }
+        if depth >= 4 {
+            continue;
         }
         if let Ok(entries) = fs::read_dir(&directory) {
             for entry in entries.flatten() {
-                // Use metadata without following symlinks, junctions and other reparse points.
+                if skip_directory(&entry.file_name().to_string_lossy()) {
+                    continue;
+                }
                 if entry.file_type().is_ok_and(|kind| kind.is_dir())
                     && entry
                         .metadata()
                         .is_ok_and(|info| info.file_attributes() & REPARSE_POINT == 0)
                 {
-                    pending.push(entry.path());
+                    pending.push_back((entry.path(), depth + 1));
                 }
             }
         }
     }
 }
-
 fn has_winws(installation: &Path) -> bool {
     ["winws.exe", "winws2.exe"].into_iter().any(|name| {
-        is_plain_file(&installation.join(name))
+        is_executable(&installation.join(name))
             || (fs::symlink_metadata(installation.join("bin"))
                 .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
-                && is_plain_file(&installation.join("bin").join(name)))
+                && is_executable(&installation.join("bin").join(name)))
     })
 }
 
-fn is_plain_directory(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
+fn is_executable(path: &Path) -> bool {
+    is_plain_file(path) && fs::metadata(path).is_ok_and(|info| info.len() > 0)
 }
 
 fn is_plain_file(path: &Path) -> bool {
@@ -165,31 +267,20 @@ fn update_list(path: &Path, apply: bool) -> io::Result<()> {
     let original = fs::read(path)?;
     let updated = without_riot_entries(&original);
     if original == updated {
-        localized!(
-            println,
-            "  Уже настроен: {}",
-            "  Already configured: {}",
-            path.display()
-        );
+        println!("  [OK] Домены Riot отсутствуют в исключениях Zapret.");
         return Ok(());
     }
     if !apply {
-        localized!(
-            println,
-            "  Можно удалить исключения Riot: {}",
-            "  Riot exclusions can be removed: {}",
+        println!(
+            "  [ПЛАН] Удалить домены Riot из исключений: {}",
             path.display()
         );
         return Ok(());
     }
 
     replace_with_backup(path, &original, &updated)?;
-    localized!(
-        println,
-        "  Исключения Riot удалены: {}",
-        "  Removed Riot exclusions: {}",
-        path.display()
-    );
+    println!("  [OK] Домены Riot удалены из исключений Zapret.");
+    println!("       Zapret сможет обрабатывать подключения к Riot.");
     Ok(())
 }
 
@@ -217,10 +308,7 @@ fn replace_with_backup(path: &Path, original: &[u8], updated: &[u8]) -> io::Resu
     drop(file);
     let result = write_result.and_then(|()| {
         if fs::read(path)? != original {
-            return Err(io::Error::other(crate::locale::text(
-                "список изменился во время обработки",
-                "the list changed during processing",
-            )));
+            return Err(io::Error::other("список изменился во время обработки"));
         }
         crate::windows::replace_file(path, &temp, &backup)
     });
@@ -228,12 +316,7 @@ fn replace_with_backup(path: &Path, original: &[u8], updated: &[u8]) -> io::Resu
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
-    localized!(
-        println,
-        "  Резервная копия: {}",
-        "  Backup: {}",
-        backup.display()
-    );
+    println!("  Резервная копия: {}", backup.display());
     Ok(())
 }
 
@@ -263,11 +346,7 @@ fn download_ipset() -> Result<Vec<u8>, String> {
         return Err(String::from_utf8_lossy(&response.stderr).trim().to_owned());
     }
     if !valid_ipset(&response.stdout) {
-        return Err(crate::locale::text(
-            "источник вернул некорректный список IPSet",
-            "the source returned an invalid IPSet list",
-        )
-        .into());
+        return Err("источник вернул некорректный список IPSet".into());
     }
     Ok(response.stdout)
 }
@@ -333,10 +412,7 @@ fn read_existing(path: &Path) -> io::Result<Option<Vec<u8>>> {
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
-        Ok(_) => Err(io::Error::other(crate::locale::text(
-            "ожидался обычный файл",
-            "expected a regular file",
-        ))),
+        Ok(_) => Err(io::Error::other("ожидался обычный файл")),
     }
 }
 
@@ -365,44 +441,42 @@ fn apply_settings(list: &Path, download: &mut Option<Result<Vec<u8>, String>>) -
     let utils = root.join("utils");
     let mut ok = true;
     let mut report = |name: &str, result: io::Result<()>| match result {
-        Ok(()) => println!("  {name}"),
+        Ok(()) => println!("  [OK] {name}"),
         Err(error) => {
             ok = false;
-            eprintln!("  {name}: {error}");
+            eprintln!("  [ОШИБКА] {name}: {error}");
         }
     };
     let usable_utils = fs::symlink_metadata(&utils)
         .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0);
     if usable_utils {
         report(
-            crate::locale::text("Game Filter: TCP и UDP", "Game Filter: TCP and UDP"),
+            "Игровые фильтры включены для TCP и UDP",
             configure_game_filter(&utils.join("game_filter.enabled")),
         );
         report(
-            crate::locale::text("Auto-Update Check: включено", "Auto-Update Check: enabled"),
+            "Проверка обновлений Zapret включена",
             enable_update_check(&utils.join("check_updates.enabled")),
         );
     } else {
         report(
             "Game Filter / Auto-Update Check",
-            Err(io::Error::other(crate::locale::text(
-                "нет доступного каталога utils",
-                "no accessible utils directory",
-            ))),
+            Err(io::Error::other("нет доступного каталога utils")),
         );
     }
     let ipset = lists.join("ipset-all.txt");
+    println!("  Загрузка актуального списка IPSet и проверка содержимого...");
     let result = match download.get_or_insert_with(download_ipset) {
         Ok(data) => read_existing(&ipset)
             .and_then(|original| write_settings(&ipset, original.as_deref(), data)),
         Err(error) => Err(io::Error::other(error.clone())),
     };
-    report(
-        crate::locale::text("Обновление списка IPSet", "IPSet list update"),
-        result,
-    );
+    report("Список IPSet обновлён и загружен в IPSet Filter", result);
     ok
 }
+
+#[cfg(test)]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {
@@ -445,7 +519,12 @@ mod tests {
             let directory = root.join(name);
             fs::create_dir_all(directory.join("lists"))?;
             if name != "unrelated" {
-                fs::write(directory.join("winws.exe"), b"")?;
+                fs::write(directory.join("winws.exe"), b"MZ")?;
+                fs::create_dir_all(directory.join("utils"))?;
+                fs::write(
+                    directory.join("service.bat"),
+                    b"LOCAL_VERSION=1.10.3\ngame_filter.enabled",
+                )?;
             }
             fs::write(directory.join("lists\\list-exclude.txt"), original)?;
         }

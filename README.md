@@ -1,5 +1,7 @@
 # Riot Fix
 
+Создано Lizhy. [Discord](https://discord.gg/pXTuzhABVx) · [Скачать для Windows x64](https://github.com/L1zhy/ValorantRussiaFix/releases/latest)
+
 [English](README.en.md)
 
 Riot Fix помогает разобраться с подключением Riot Client и VALORANT на Windows. Запусти `riot-fix.exe` и выбери язык в списке в правом верхнем углу.

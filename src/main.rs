@@ -13,6 +13,7 @@ macro_rules! localized {
 mod gui;
 mod hosts;
 mod network;
+mod progress;
 mod windows;
 mod zapret;
 
@@ -222,7 +223,13 @@ fn main() -> ExitCode {
         },
         Mode::Apply => repair(true, options.zapret_dir.as_deref()),
         Mode::DryRun => repair(false, options.zapret_dir.as_deref()),
-        Mode::Check => u8::from(!network::check_config()) * 2,
+        Mode::Check => {
+            let _activity = progress::Activity::start(locale::text(
+                "Ожидание HTTPS-ответа Riot",
+                "Waiting for Riot HTTPS response",
+            ));
+            u8::from(!network::check_config()) * 2
+        }
         Mode::VoiceCheck | Mode::VoiceFix | Mode::VoiceReset => voice(options.mode),
         Mode::RestartClient => match gui::run_script(
             include_bytes!("restart-client.ps1"),
@@ -305,6 +312,10 @@ fn voice(mode: Mode) -> u8 {
 
 fn repair(apply: bool, zapret_dir: Option<&Path>) -> u8 {
     println!("=== Riot Fix ===");
+    let activity = progress::Activity::start(locale::text(
+        "Проверка Zapret, DNS и HTTPS",
+        "Checking Zapret, DNS, and HTTPS",
+    ));
     let (zapret_ok, report) = if apply {
         let zapret_ok = zapret::run(true, zapret_dir);
         if !zapret_ok && zapret_dir.is_some() {
@@ -319,6 +330,7 @@ fn repair(apply: bool, zapret_dir: Option<&Path>) -> u8 {
         })
     };
 
+    drop(activity);
     let mut config_ok = true;
     if apply {
         match hosts::apply(&report.pins) {

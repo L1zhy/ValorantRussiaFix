@@ -1,5 +1,7 @@
 # Riot Fix
 
+Created by Lizhy. [Discord](https://discord.gg/pXTuzhABVx) · [Download for Windows x64](https://github.com/L1zhy/ValorantRussiaFix/releases/latest)
+
 [Русский](README.md)
 
 Riot Fix helps diagnose connection problems with Riot Client and VALORANT on Windows. Run `riot-fix.exe` and choose your language from the list in the upper-right corner.
