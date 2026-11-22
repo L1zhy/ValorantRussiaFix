@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 const CONFIG: &str = "clientconfig.rpg.riotgames.com";
 const CONFIG_PATH: &str = "/api/v1/config/public?app=Riot%20Client&patchline=KeystoneFoundationLiveWin&namespace=keystone.self_update";
+const GEO: &str = "riot-geo.pas.si.riotgames.com";
 const DOMAINS: &[&str] = &[
     CONFIG,
     "auth.riotgames.com",
@@ -18,8 +19,7 @@ const DOMAINS: &[&str] = &[
     "account.riotgames.com",
     "api.account.riotgames.com",
     "data.riotgames.com",
-    "playerpreferences.riotgames.com",
-    "riot-geo.pas.si.riotgames.com",
+    GEO,
     "sieve.services.riotcdn.net",
     "valorant.secure.dyn.riotcdn.net",
     "ks-foundation.secure.dyn.riotcdn.net",
@@ -42,6 +42,7 @@ const FALLBACK_IPS: &[&str] = &[
 ];
 const TRIES: usize = 3;
 const CONCURRENCY: usize = 6;
+const FALLBACK_CONCURRENCY: usize = 3;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Default)]
@@ -122,7 +123,11 @@ fn probe(domain: &str, ip: Option<Ipv4Addr>) -> Result<Duration, String> {
     if let Some(ip) = ip {
         cmd.args(["--resolve", &format!("{domain}:443:{ip}")]);
     }
-    let target = if domain == CONFIG { CONFIG_PATH } else { "/" };
+    let target = match domain {
+        CONFIG => CONFIG_PATH,
+        GEO => "/pas/v1/product/valorant",
+        _ => "/",
+    };
     cmd.arg(format!("https://{domain}{target}"));
     let start = Instant::now();
     let response = cmd
@@ -205,7 +210,7 @@ fn check_domain(domain: &str) -> (Resolution, String) {
 
     if best.is_none() {
         let public = resolve(domain, true);
-        let cf_domain = DOMAINS[..8].contains(&domain)
+        let cf_domain = DOMAINS[..7].contains(&domain)
             || domain == "sieve.services.riotcdn.net"
             || dns.iter().chain(&public).copied().any(is_cloudflare);
         let fallback = FALLBACK_IPS.iter().filter_map(|value| value.parse().ok());
@@ -213,14 +218,24 @@ fn check_domain(domain: &str) -> (Resolution, String) {
             public
                 .into_iter()
                 .chain(fallback.take(if cf_domain { FALLBACK_IPS.len() } else { 0 }));
-        for ip in candidates {
-            if !tested.insert(ip) {
-                continue;
-            }
-            let (average, note) = check_ip(domain, ip);
-            let _ = writeln!(details, "  {ip:<15} {note}");
-            if let Some(average) = average {
-                best = Some((average, ip));
+        let candidates: Vec<_> = candidates.filter(|ip| tested.insert(*ip)).collect();
+        for batch in candidates.chunks(FALLBACK_CONCURRENCY) {
+            best = thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|&ip| (ip, scope.spawn(move || check_ip(domain, ip))))
+                    .collect();
+                let mut first_working = None;
+                for (ip, handle) in handles {
+                    let (average, note) = handle.join().expect("IP check");
+                    let _ = writeln!(details, "  {ip:<15} {note}");
+                    if let Some(average) = average {
+                        first_working.get_or_insert((average, ip));
+                    }
+                }
+                first_working
+            });
+            if best.is_some() {
                 break;
             }
         }
@@ -314,28 +329,35 @@ pub fn run() -> Report {
     let domains: Vec<_> = domains.into_iter().collect();
     let mut report = Report::default();
     println!("Проверка {} доменов Riot по HTTPS напрямую", domains.len());
-    for chunk in domains.chunks(CONCURRENCY) {
-        thread::scope(|scope| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|domain| (domain, scope.spawn(move || check_domain(domain))))
-                .collect();
-            for (domain, handle) in handles {
-                match handle.join() {
-                    Ok((resolution, details)) => {
-                        print!("{details}");
-                        match resolution {
-                            Resolution::StableDns => {}
-                            Resolution::Pin(ip) => {
-                                report.pins.insert(domain.clone(), ip);
-                            }
-                            Resolution::Unresolved => report.unresolved += 1,
-                        }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::scope(|scope| {
+        for _ in 0..CONCURRENCY.min(domains.len()) {
+            let sender = sender.clone();
+            let domains = &domains;
+            let next = &next;
+            scope.spawn(move || {
+                while let Some(domain) =
+                    domains.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    let (resolution, details) = check_domain(domain);
+                    if sender.send((domain, resolution, details)).is_err() {
+                        break;
                     }
-                    Err(_) => report.unresolved += 1,
                 }
+            });
+        }
+        drop(sender);
+        for (domain, resolution, details) in receiver {
+            print!("{details}");
+            match resolution {
+                Resolution::StableDns => {}
+                Resolution::Pin(ip) => {
+                    report.pins.insert(domain.clone(), ip);
+                }
+                Resolution::Unresolved => report.unresolved += 1,
             }
-        });
-    }
+        }
+    });
     report
 }

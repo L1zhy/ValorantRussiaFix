@@ -13,27 +13,42 @@ unsafe extern "system" {
     fn GetDriveTypeW(root: *const u16) -> u32;
 }
 
-pub fn run(apply: bool) -> bool {
+pub fn run(apply: bool, installation: Option<&Path>) -> bool {
     let mut download = None;
     let mut found = false;
     let mut ok = true;
-    for root in drive_roots() {
-        println!("Поиск Zapret: {}", root.display());
-        visit_lists(&root, |path| {
-            found = true;
-            if let Err(error) = update_list(path, apply) {
-                eprintln!("Не удалось обработать {}: {error}", path.display());
-                ok = false;
-            }
-            if apply {
-                ok &= apply_settings(path, &mut download);
-            } else {
-                println!(
-                    "  Можно включить Game Filter (TCP и UDP), Auto-Update Check и обновить IPSet: {}",
-                    path.display()
-                );
-            }
-        });
+    let mut handle = |path: &Path| {
+        found = true;
+        if let Err(error) = update_list(path, apply) {
+            eprintln!("Не удалось обработать {}: {error}", path.display());
+            ok = false;
+        }
+        if apply {
+            ok &= apply_settings(path, &mut download);
+        } else {
+            println!(
+                "  Можно включить Game Filter (TCP и UDP), Auto-Update Check и обновить IPSet: {}",
+                path.display()
+            );
+        }
+    };
+    if let Some(installation) = installation {
+        let lists = installation.join("lists");
+        let list = lists.join("list-exclude.txt");
+        if !is_plain_directory(installation)
+            || !is_plain_directory(&lists)
+            || !is_plain_file(&list)
+            || !has_winws(installation)
+        {
+            eprintln!("Invalid Zapret installation: {}", installation.display());
+            return false;
+        }
+        handle(&list);
+    } else {
+        for root in drive_roots() {
+            println!("Поиск Zapret: {}", root.display());
+            visit_lists(&root, &mut handle);
+        }
     }
     if !found {
         println!("Доступные установки Zapret со списком исключений не найдены.");
@@ -94,6 +109,11 @@ fn has_winws(installation: &Path) -> bool {
                 .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
                 && is_plain_file(&installation.join("bin").join(name)))
     })
+}
+
+fn is_plain_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|info| info.is_dir() && info.file_attributes() & REPARSE_POINT == 0)
 }
 
 fn is_plain_file(path: &Path) -> bool {
