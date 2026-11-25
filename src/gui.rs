@@ -22,6 +22,7 @@ pub fn run_script(script: &[u8], language: Option<&str>) -> io::Result<std::proc
         ])
         .env("RIOT_FIX_GUI_EXE", env::current_exe()?)
         .env("RIOT_FIX_GUI_LANG", language.unwrap_or_default())
+        .env("RIOT_FIX_RUNNER_PID", std::process::id().to_string())
         .stdin(Stdio::piped())
         .creation_flags(0x08000000)
         .spawn()?;

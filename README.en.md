@@ -8,6 +8,8 @@ Riot Fix helps diagnose connection problems with Riot Client and VALORANT on Win
 
 Start with the quick check for access to the Riot Client Config API. Verify sign-in and game launch in Riot Client. Voice chat has its own check.
 
+If Riot Client opens to a blank gray window, close the game and click **Restart Riot Client** in Riot Fix. If the window can't connect to the local service, Riot Fix waits for the service to start and opens the window again.
+
 Applying changes requires administrator rights. The tool can change Zapret settings and the Windows `hosts` file. When it replaces an existing file, it saves a backup beside it. To undo a change, restore the corresponding backup. Restoring `hosts` requires administrator rights.
 
 ## Command line
@@ -15,7 +17,7 @@ Applying changes requires administrator rights. The tool can change Zapret setti
 - `riot-fix.exe --check` checks access to the Riot Client Config API.
 - `riot-fix.exe --dry-run` finds Zapret installations and checks the network without writing files.
 - `riot-fix.exe --help` lists all commands.
-- `riot-fix.exe --restart-client` restarts an unresponsive Riot Client. The desktop app has the same option. Close the game before restarting.
+- `riot-fix.exe --restart-client` runs the same restart and connection check from the command line.
 
 Add `--lang en` or `--lang ru` to choose the console language.
 
