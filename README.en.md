@@ -4,7 +4,9 @@ Created by Lizhy. [Discord](https://discord.gg/pXTuzhABVx) · [Download for Wind
 
 [Русский](README.md)
 
-Riot Fix helps diagnose connection problems with Riot Client and VALORANT on Windows. Run `riot-fix.exe` and choose your language from the list in the upper-right corner.
+Riot Fix recovers Vanguard updates and helps diagnose VALORANT connectivity on Windows. Double-click `riot-fix.exe` to open a native Windows window without a console or PowerShell. Use the menu in the upper-right corner to change languages.
+
+Riot Fix checks the Riot Client log at startup. If the Vanguard download stops progressing for two minutes or Riot Client reports an installation failure, Riot Fix downloads the required version from Riot, verifies the installer's signature, and requests administrator approval to install it. Close any running Riot game before recovery. Riot Fix verifies the new Vanguard version and opens Riot Client after installation.
 
 Start with the quick check for access to the Riot Client Config API. Verify sign-in and game launch in Riot Client. Voice chat has its own check.
 
@@ -23,7 +25,7 @@ Add `--lang en` or `--lang ru` to choose the console language.
 
 ## Build
 
-You need Rust with edition 2024 support and the MSVC build tools. The app uses Windows PowerShell and `curl.exe`.
+You need Rust with edition 2024 support and the MSVC build tools. The app opens as a native Windows executable.
 
 ```powershell
 cargo test --locked

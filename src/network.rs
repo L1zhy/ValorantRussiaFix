@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,7 +44,6 @@ const FALLBACK_IPS: &[&str] = &[
 const TRIES: usize = 3;
 const CONCURRENCY: usize = 6;
 const FALLBACK_CONCURRENCY: usize = 3;
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Default)]
 pub struct Report {
@@ -60,42 +57,30 @@ enum Resolution {
     Unresolved,
 }
 
-fn system_command(relative: &str) -> Command {
-    let windows = PathBuf::from(env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()));
-    let mut command = Command::new(windows.join("System32").join(relative));
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
-}
-
 fn resolve(domain: &str, external: bool) -> BTreeSet<Ipv4Addr> {
-    const SYSTEM_DNS: &str = "Resolve-DnsName -Name $env:RIOT_FIX_DNS_HOST -Type A -DnsOnly -NoHostsFile -QuickTimeout -ErrorAction SilentlyContinue | Where-Object Type -eq A | ForEach-Object IPAddress";
-    const PUBLIC_DNS: &str = "foreach ($server in @('1.1.1.1','8.8.8.8','77.88.8.8')) { Resolve-DnsName -Name $env:RIOT_FIX_DNS_HOST -Server $server -Type A -DnsOnly -NoHostsFile -QuickTimeout -ErrorAction SilentlyContinue | Where-Object Type -eq A | ForEach-Object IPAddress }";
-    let output = system_command(r"WindowsPowerShell\v1.0\powershell.exe")
-        .env("RIOT_FIX_DNS_HOST", domain)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            if external { PUBLIC_DNS } else { SYSTEM_DNS },
-        ])
-        .output();
-    output
-        .map(|child| {
-            String::from_utf8_lossy(&child.stdout)
-                .split_whitespace()
-                .filter_map(|line| line.parse::<Ipv4Addr>().ok())
-                .filter(|ip| {
-                    let [a, b, ..] = ip.octets();
-                    !(ip.is_private()
-                        || ip.is_loopback()
-                        || ip.is_link_local()
-                        || a == 0
-                        || a >= 224
-                        || (a == 100 && (64..128).contains(&b)))
-                })
-                .collect()
+    let public = [
+        Ipv4Addr::new(1, 1, 1, 1),
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(77, 88, 8, 8),
+    ];
+    let servers = if external {
+        public.map(Some).to_vec()
+    } else {
+        vec![None]
+    };
+    servers
+        .into_iter()
+        .flat_map(|server| crate::windows::dns_a(domain, server))
+        .filter(|ip| {
+            let [a, b, ..] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || a == 0
+                || a >= 224
+                || (a == 100 && (64..128).contains(&b)))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn accepts_status(domain: &str, status: u16) -> bool {
@@ -132,76 +117,24 @@ fn probe_https(
     ip: Option<Ipv4Addr>,
     transport_only: bool,
 ) -> Result<Duration, ProbeError> {
-    let mut cmd = system_command("curl.exe");
-    cmd.args([
-        "--disable",
-        "--noproxy",
-        "*",
-        "--ipv4",
-        "--silent",
-        "--connect-timeout",
-        "4",
-        "--max-time",
-        "7",
-        "--output",
-        "NUL",
-        "--write-out",
-        "%{http_code}",
-    ]);
-    if let Some(ip) = ip {
-        cmd.args(["--resolve", &format!("{domain}:443:{ip}")]);
-    }
     let target = match domain {
         CONFIG => CONFIG_PATH,
         GEO => "/pas/v1/product/valorant",
         _ => "/",
     };
-    cmd.arg(format!("https://{domain}{target}"));
     let start = Instant::now();
-    let response = cmd.output().map_err(|error| {
-        ProbeError::Transport(localized!(
-            format,
-            "Ошибка запуска curl.exe ({error})",
-            "Could not start curl.exe ({error})"
-        ))
-    })?;
-    if !response.status.success() {
-        return Err(ProbeError::Transport(match response.status.code() {
-            Some(6) => crate::locale::text("ошибка DNS", "DNS lookup failed").into(),
-            Some(7) => {
-                crate::locale::text("не удалось установить TCP", "TCP connection failed").into()
-            }
-            Some(18) => {
-                crate::locale::text("неполный HTTP-ответ", "incomplete HTTP response").into()
-            }
-            Some(28) => crate::locale::text(
-                "тайм-аут соединения или ответа",
-                "connection or response timed out",
-            )
-            .into(),
-            Some(35) => crate::locale::text("ошибка TLS", "TLS error").into(),
-            Some(60) => crate::locale::text(
-                "ошибка проверки сертификата",
-                "certificate verification failed",
-            )
-            .into(),
-            code => localized!(
-                format,
-                "curl завершился с кодом {code:?}",
-                "curl exited with code {code:?}"
-            ),
-        }));
-    }
-
-    let status = String::from_utf8_lossy(&response.stdout);
-    let code = status.trim().parse().map_err(|_| {
-        ProbeError::Transport(localized!(
-            format,
-            "Некорректный статус HTTP: {}",
-            "Invalid HTTP status: {}",
-            status.trim()
-        ))
-    })?;
+    let code = (|| -> Result<u16, curl::Error> {
+        let mut request = crate::http::request(&format!("https://{domain}{target}"), 7, 4)?;
+        if let Some(ip) = ip {
+            let mut addresses = curl::easy::List::new();
+            addresses.append(&format!("{domain}:443:{ip}"))?;
+            request.resolve(addresses)?;
+        }
+        request.write_function(|data| Ok(data.len()))?;
+        request.perform()?;
+        Ok(request.response_code()? as u16)
+    })()
+    .map_err(|error| ProbeError::Transport(error.to_string()))?;
     if !(if transport_only {
         (100..600).contains(&code)
     } else {

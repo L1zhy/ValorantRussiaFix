@@ -1,6 +1,12 @@
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 static LANGUAGE: OnceLock<Option<&'static str>> = OnceLock::new();
+thread_local! { static WORKER_LANGUAGE: Cell<Option<bool>> = const { Cell::new(None) }; }
+
+pub fn set_worker_language(ru: bool) {
+    WORKER_LANGUAGE.set(Some(ru));
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -20,6 +26,9 @@ pub fn explicit() -> Option<&'static str> {
 }
 
 pub fn is_russian() -> bool {
+    if let Some(ru) = WORKER_LANGUAGE.get() {
+        return ru;
+    }
     match explicit() {
         Some(lang) => lang == "ru",
         // The low ten bits identify the primary Windows UI language.

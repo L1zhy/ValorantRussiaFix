@@ -4,3 +4,10 @@ version = "0.1.9"
 edition = "2024"
 description = "Windows utility for diagnosing direct Riot connectivity and updating Zapret exclusions"
 license = "MIT"
+
+[dependencies]
+curl = "0.4.51"
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Registry", "Win32_System_RemoteDesktop"] }

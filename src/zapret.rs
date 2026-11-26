@@ -323,32 +323,13 @@ fn replace_with_backup(path: &Path, original: &[u8], updated: &[u8]) -> io::Resu
 const IPSET_URL: &str = "https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/refs/heads/main/.service/ipset-service.txt";
 
 fn download_ipset() -> Result<Vec<u8>, String> {
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-    let response = std::process::Command::new(PathBuf::from(root).join(r"System32\curl.exe"))
-        .args([
-            "--disable",
-            "--noproxy",
-            "*",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--connect-timeout",
-            "8",
-            "--max-time",
-            "30",
-            "--max-filesize",
-            "4194304",
-            IPSET_URL,
-        ])
-        .output()
+    let mut data = Vec::new();
+    crate::http::download(IPSET_URL, &mut data, 4 * 1024 * 1024, 30, |_, _| true)
         .map_err(|error| error.to_string())?;
-    if !response.status.success() {
-        return Err(String::from_utf8_lossy(&response.stderr).trim().to_owned());
-    }
-    if !valid_ipset(&response.stdout) {
+    if !valid_ipset(&data) {
         return Err("источник вернул некорректный список IPSet".into());
     }
-    Ok(response.stdout)
+    Ok(data)
 }
 
 fn valid_ipset(data: &[u8]) -> bool {

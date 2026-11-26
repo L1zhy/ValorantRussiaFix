@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), windows_subsystem = "windows")]
+
 mod locale;
 
 macro_rules! localized {
@@ -10,10 +12,13 @@ macro_rules! localized {
     };
 }
 
+mod client;
 mod gui;
 mod hosts;
+mod http;
 mod network;
 mod progress;
+mod vanguard;
 mod windows;
 mod zapret;
 
@@ -164,6 +169,9 @@ impl Options {
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().nth(1).is_some() {
+        windows::attach_parent_console();
+    }
     let help = locale::text(HELP_RU, HELP_EN);
     let options = match Options::parse() {
         Ok(options) => options,
@@ -218,6 +226,7 @@ fn main() -> ExitCode {
                     "Не удалось открыть Riot Fix: {error}",
                     "Could not open Riot Fix: {error}"
                 );
+                windows::error_dialog(&error.to_string());
                 1
             }
         },
@@ -231,16 +240,13 @@ fn main() -> ExitCode {
             u8::from(!network::check_config()) * 2
         }
         Mode::VoiceCheck | Mode::VoiceFix | Mode::VoiceReset => voice(options.mode),
-        Mode::RestartClient => match gui::run_script(
-            include_bytes!("restart-client.ps1"),
-            Some(locale::text("ru", "en")),
-        ) {
-            Ok(status) => u8::from(!status.success()),
+        Mode::RestartClient => match client::restart() {
+            Ok(()) => 0,
             Err(error) => {
                 localized!(
                     eprintln,
-                    "Не удалось запустить перезапуск клиента: {error}",
-                    "Could not start the client restart: {error}"
+                    "Не удалось перезапустить Riot Client: {error}",
+                    "Could not restart Riot Client: {error}"
                 );
                 1
             }
